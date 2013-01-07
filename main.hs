@@ -84,6 +84,7 @@ parse text | nick `isPrefixOf` text = eval $ drop 1 $ words text
 parse _ = return ()
 
 eval ::  [String] -> Net ()
+eval [] = return ()
 eval text = let cmd  = head text
                 args = tail text
                 act  = lookup cmd actions
