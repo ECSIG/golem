@@ -25,7 +25,7 @@ main :: IO ()
 main = bracket connect disconnect loop
   where
     disconnect = hClose . socket
-    loop st    = runReaderT run st
+    loop       = runReaderT run
 
 
 -- Connect to the server and return the initial bot state
@@ -36,10 +36,9 @@ connect = notify $ do
     hSetBuffering h NoBuffering
     return (Bot h t)
   where
-    notify a = bracket_
-           (printf "Connecting to %s ... " server >> hFlush stdout)
-           (putStrLn "done.")
-           a
+    notify = bracket_
+             (printf "Connecting to %s ... " server >> hFlush stdout)
+             (putStrLn "done.")
 
 -- We're in the Net monad now, so we've connect successfully
 -- Join a channel, and start processing commands
@@ -72,25 +71,25 @@ listen h = forever $ do
        io (putStrLn s)
        if ping s then pong s else parse (clean s)
   where
-       forever a = a >> forever a
        clean     = drop 1 . dropWhile (/= ':') . drop 1
        ping x    = "PING :" `isPrefixOf` x
        pong x    = write "PONG" (':' : drop 6 x)
 
 parse :: String -> Net ()
-parse "" = return ()
-parse text | nick `isPrefixOf` text = eval $ drop 1 $ words text
+parse text | null text = return ()
+           | nick `isPrefixOf` text = eval $ drop 1 $ words text
            | '!' == head text = eval $ words $ drop 1 text
-parse _ = return ()
+           | otherwise = return ()
 
 eval ::  [String] -> Net ()
-eval [] = return ()
-eval text = let cmd  = head text
-                args = tail text
-                act  = lookup cmd actions
-            in case act of 
-                 Nothing -> return ()
-                 Just action -> action args
+eval text | null text = return ()
+          | otherwise = 
+              let cmd  = head text
+                  args = tail text
+                  act  = lookup cmd actions
+              in case act of 
+                   Nothing -> return ()
+                   Just action -> action args
 
 ---------------------------
 --------- Actions ---------
@@ -106,7 +105,7 @@ actions = [ ("quit", quit)
 -- Exit network
 quit :: [String] -> Net ()
 quit notice = write "QUIT" (':' : unwords notice) 
-              >> io (exitWith ExitSuccess)
+              >> io exitSuccess
 
 -- Echo text
 echo :: [String] -> Net ()
