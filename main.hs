@@ -1,5 +1,5 @@
 --------------------
--- DATA THE ROBOT --
+-- GOLEM THE ROBOT --
 --------------------
 
 import Network
@@ -11,11 +11,12 @@ import Control.Monad.Reader
 import Control.Exception
 import System.Time
 import Prelude hiding (catch)
+import Control.Concurrent (threadDelay)
  
 server = "ecsig.com"
 port   = 6667
-chan   = "#ecsig"
-nick   = "data"
+chan   = "#golem"
+nick   = "golem-bot"
 
 type Net = ReaderT Bot IO
 data Bot = Bot { socket :: Handle, starttime :: ClockTime }
@@ -45,8 +46,8 @@ connect = notify $ do
 run :: Net ()
 run = do
     write "NICK" nick
-    write "USER" (nick ++ " 0 * :tutorial bot")
-    write "JOIN" chan
+    write "USER" (nick ++ " 0 * :Haskell IRC bot")
+    -- write "JOIN" chan
     asks socket >>= listen
 
 ----------------------------
@@ -69,7 +70,11 @@ listen :: Handle -> Net ()
 listen h = forever $ do
        s <- init `fmap` io (hGetLine h)
        io (putStrLn s)
-       if ping s then pong s else parse (clean s)
+       if ping s 
+          then pong s 
+          else if words s !! 1 == "MODE"
+              then write "JOIN" chan
+              else parse (clean s)
   where
        clean     = drop 1 . dropWhile (/= ':') . drop 1
        ping x    = "PING :" `isPrefixOf` x
@@ -91,6 +96,9 @@ eval text | null text = return ()
                    Nothing -> return ()
                    Just action -> action args
 
+
+joinChan :: Net ()
+joinChan = write "JOIN" chan
 ---------------------------
 --------- Actions ---------
 ---------------------------
@@ -130,4 +138,5 @@ pretty td = join . intersperse " " . filter (not . null) . map f $
     hours   = mins   `div` 60 ; days   = hours  `div` 24
     months  = days   `div` 28 ; years  = months `div` 12
     f (i,s) | i == 0    = []
-            | otherwise = show i ++ s           
+            | otherwise = show i ++ s
+
