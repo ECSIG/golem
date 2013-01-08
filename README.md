@@ -1,4 +1,4 @@
-data
+golem
 ====
 
 IRC bot
