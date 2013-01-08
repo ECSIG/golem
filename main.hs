@@ -47,7 +47,6 @@ run :: Net ()
 run = do
     write "NICK" nick
     write "USER" (nick ++ " 0 * :Haskell IRC bot")
-    -- write "JOIN" chan
     asks socket >>= listen
 
 ----------------------------
@@ -97,8 +96,6 @@ eval text | null text = return ()
                    Just action -> action args
 
 
-joinChan :: Net ()
-joinChan = write "JOIN" chan
 ---------------------------
 --------- Actions ---------
 ---------------------------
