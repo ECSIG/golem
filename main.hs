@@ -7,6 +7,7 @@ import System.IO
 import Text.Printf
 import Data.List
 import System.Exit
+import System.Environment (getArgs)
 import Control.Monad.Reader
 import Control.Exception
 import System.Time
@@ -15,11 +16,14 @@ import Control.Concurrent (threadDelay)
  
 server = "ecsig.com"
 port   = 6667
-chan   = "#golem"
 nick   = "golem-bot"
+chan  = "#golem"
 
 type Net = ReaderT Bot IO
-data Bot = Bot { socket :: Handle, starttime :: ClockTime }
+data Bot = Bot { socket :: Handle
+               , starttime :: ClockTime
+               , nickname :: String
+               , channel :: String}
 
 -- Set up actions to run on start and end, and run the main loop
 main :: IO ()
@@ -35,7 +39,10 @@ connect = notify $ do
     t <- getClockTime
     h <- connectTo server (PortNumber (fromIntegral port))
     hSetBuffering h NoBuffering
-    return (Bot h t)
+    args <- getArgs
+    case args of
+      [n,c] -> return (Bot h t n c)
+      _     -> return (Bot h t nick chan)
   where
     notify = bracket_
              (printf "Connecting to %s ... " server >> hFlush stdout)
@@ -45,9 +52,10 @@ connect = notify $ do
 -- Join a channel, and start processing commands
 run :: Net ()
 run = do
-    write "NICK" nick
-    write "USER" (nick ++ " 0 * :Haskell IRC bot")
-    asks socket >>= listen
+  n <- asks nickname
+  write "NICK" n
+  write "USER" (nick ++ " 0 * :Haskell IRC bot")
+  asks socket >>= listen
 
 ----------------------------
 ------------ IO ------------
@@ -70,14 +78,17 @@ listen h = forever $ do
        s <- init `fmap` io (hGetLine h)
        io (putStrLn s)
        if ping s 
-          then pong s 
-          else if words s !! 1 == "MODE"
-              then write "JOIN" chan
-              else parse (clean s)
-  where
+       then pong s 
+       else if welcome s
+            then do 
+              c <- asks channel
+              joinChan [c]
+            else parse (clean s)
+    where
        clean     = drop 1 . dropWhile (/= ':') . drop 1
        ping x    = "PING :" `isPrefixOf` x
        pong x    = write "PONG" (':' : drop 6 x)
+       welcome x = words x !! 1 == "001"
 
 parse :: String -> Net ()
 parse text | null text = return ()
@@ -109,12 +120,16 @@ actions = [ ("quit", quit)
 
 -- Exit network
 quit :: [String] -> Net ()
-quit notice = write "QUIT" (':' : unwords notice) 
+quit notice = write "QUIT" (':' : unwords notice)
               >> io exitSuccess
 
 -- Echo text
 echo :: [String] -> Net ()
 echo text = privmsg $ unwords text
+
+-- Join a channel
+joinChan :: [String] -> Net ()
+joinChan chan = write "JOIN" (':' : unwords chan)
 
 -- Output uptime
 uptime :: [String] -> Net ()
