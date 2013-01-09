@@ -54,7 +54,7 @@ run :: Net ()
 run = do
   n <- asks nickname
   write "NICK" n
-  write "USER" (nick ++ " 0 * :Haskell IRC bot")
+  write "USER" (n ++ " 0 * :Haskell IRC bot")
   asks socket >>= listen
 
 ----------------------------
