@@ -13,17 +13,22 @@ import Control.Exception
 import System.Time
 import Prelude hiding (catch)
 import Control.Concurrent (threadDelay)
+import Network.IRC.Commands(Channel)
+import Network.IRC.Base(ServerName,UserName)
  
-server = "ecsig.com"
+defaultName   = "golem-bot"
+defaultChannel  = "#golem"
+defaultServer = "localhost"
 port   = 6667
-nick   = "golem-bot"
-chan  = "#golem"
 
 type Net = ReaderT Bot IO
-data Bot = Bot { socket :: Handle
-               , starttime :: ClockTime
-               , nickname :: String
-               , channel :: String}
+
+data Bot = Bot { startTime :: ClockTime
+               , socket :: Handle
+               , nickname :: UserName
+               , channel :: Channel
+               , server :: ServerName
+               }
 
 -- Set up actions to run on start and end, and run the main loop
 main :: IO ()
@@ -32,29 +37,34 @@ main = bracket connect disconnect loop
     disconnect = hClose . socket
     loop       = runReaderT run
 
-
 -- Connect to the server and return the initial bot state
 connect :: IO Bot
 connect = notify $ do
-    t <- getClockTime
-    h <- connectTo server (PortNumber (fromIntegral port))
-    hSetBuffering h NoBuffering
-    args <- getArgs
-    case args of
-      [n,c] -> return (Bot h t n c)
-      _     -> return (Bot h t nick chan)
-  where
-    notify = bracket_
-             (printf "Connecting to %s ... " server >> hFlush stdout)
-             (putStrLn "done.")
+      args <- getArgs
+      buildState defaultName defaultChannel defaultServer args
+    where buildState n c s [] = do 
+                     t <- getClockTime
+                     h <- connectTo s (PortNumber (fromIntegral port))
+                     hSetBuffering h NoBuffering
+                     return (Bot t h n c s)
+          buildState n c s (a:as)
+                   | "nick=" `isPrefixOf` a
+                       = buildState (drop 5 a) c s as
+                   | "channel=" `isPrefixOf` a
+                       = buildState n (drop 8 a) s as
+                   | "server=" `isPrefixOf` a
+                       = buildState n c (drop 7 a) as
+          notify = bracket_
+                   (print "Connecting to server ... " >> hFlush stdout)
+                   (putStrLn "done.")
 
 -- We're in the Net monad now, so we've connect successfully
 -- Join a channel, and start processing commands
 run :: Net ()
 run = do
-  n <- asks nickname
-  write "NICK" n
-  write "USER" (n ++ " 0 * :Haskell IRC bot")
+  name <- asks nickname
+  write "NICK" name
+  write "USER" (name ++ "-bot 0 * :some kinda robot")
   asks socket >>= listen
 
 ----------------------------
@@ -71,7 +81,9 @@ write s t = do
       io $ printf    "> %s %s\n" s t
 
 privmsg :: String -> Net ()
-privmsg s = write "PRIVMSG" (chan ++ " :" ++ s)
+privmsg s = do 
+  chan <- asks channel
+  write "PRIVMSG" (chan ++ " :" ++ s)
 
 listen :: Handle -> Net ()
 listen h = forever $ do
@@ -92,7 +104,7 @@ listen h = forever $ do
 
 parse :: String -> Net ()
 parse text | null text = return ()
-           | nick `isPrefixOf` text = eval $ drop 1 $ words text
+--         | name `isPrefixOf` text = eval $ drop 1 $ words text
            | '!' == head text = eval $ words $ drop 1 text
            | otherwise = return ()
 
@@ -135,7 +147,7 @@ joinChan chan = write "JOIN" (':' : unwords chan)
 uptime :: [String] -> Net ()
 uptime _ = do
          now <- io getClockTime
-         zero <- asks starttime
+         zero <- asks startTime
          privmsg $ pretty $ diffClockTimes now zero
 
 
