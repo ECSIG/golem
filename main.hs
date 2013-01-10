@@ -18,7 +18,7 @@ import Network.IRC.Base(ServerName,UserName)
  
 defaultName   = "golem-bot"
 defaultChannel  = "#golem"
-defaultServer = "localhost"
+defaultServer = "irc.ecsig.com"
 port   = 6667
 
 type Net = ReaderT Bot IO
@@ -103,10 +103,14 @@ listen h = forever $ do
        welcome x = words x !! 1 == "001"
 
 parse :: String -> Net ()
-parse text | null text = return ()
---         | name `isPrefixOf` text = eval $ drop 1 $ words text
-           | '!' == head text = eval $ words $ drop 1 text
-           | otherwise = return ()
+parse text = do
+  name <- asks nickname
+  if null text then return ()
+  else if name `isPrefixOf` text 
+       then eval $ drop 1 $ words text
+  else if '!' == head text 
+       then eval $ words $ drop 1 text
+  else return ()
 
 eval ::  [String] -> Net ()
 eval text | null text = return ()
