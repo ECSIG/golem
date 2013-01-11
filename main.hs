@@ -13,8 +13,9 @@ import Control.Exception
 import System.Time
 import Prelude hiding (catch)
 import Control.Concurrent (threadDelay)
-import Network.IRC.Commands(Channel)
-import Network.IRC.Base(ServerName,UserName)
+import qualified Network.IRC.Commands as IrcC
+import Network.IRC.Base(ServerName,UserName,Message,encode)
+
  
 defaultName   = "golem-bot"
 defaultChannel  = "#golem"
@@ -26,7 +27,7 @@ type Net = ReaderT Bot IO
 data Bot = Bot { startTime :: ClockTime
                , socket :: Handle
                , nickname :: UserName
-               , channel :: Channel
+               , channel :: IrcC.Channel
                , server :: ServerName
                }
 
@@ -63,8 +64,8 @@ connect = notify $ do
 run :: Net ()
 run = do
   name <- asks nickname
-  write "NICK" name
-  write "USER" (name ++ "-bot 0 * :some kinda robot")
+  write $ IrcC.nick name
+  write $ IrcC.user ((take 6 name)++"-bot") "0" "*" "some kinda robot"
   asks socket >>= listen
 
 ----------------------------
@@ -74,23 +75,24 @@ run = do
 io :: IO a -> Net a
 io = liftIO
 
-write :: String -> String -> Net ()
-write s t = do
-      h <- asks socket
-      io $ hPrintf h "%s %s\r\n" s t
-      io $ printf    "> %s %s\n" s t
+write :: Message -> Net ()
+write msg = do
+  h <- asks socket
+  io $ hPutStrLn h str
+  io $ putStrLn str
+    where str = encode msg
 
 privmsg :: String -> Net ()
 privmsg s = do 
-  chan <- asks channel
-  write "PRIVMSG" (chan ++ " :" ++ s)
+  c <- asks channel
+  write $ IrcC.privmsg c s
 
 listen :: Handle -> Net ()
 listen h = forever $ do
        s <- init `fmap` io (hGetLine h)
        io (putStrLn s)
-       if ping s 
-       then pong s 
+       if ping s
+       then pong s
        else if welcome s
             then do 
               c <- asks channel
@@ -99,7 +101,7 @@ listen h = forever $ do
     where
        clean     = drop 1 . dropWhile (/= ':') . drop 1
        ping x    = "PING :" `isPrefixOf` x
-       pong x    = write "PONG" (':' : drop 6 x)
+       pong x    = do io $ hPrintf h "%s %s\r\n" "PONG" (':' : drop 6 x)
        welcome x = words x !! 1 == "001"
 
 parse :: String -> Net ()
@@ -136,16 +138,23 @@ actions = [ ("quit", quit)
 
 -- Exit network
 quit :: [String] -> Net ()
-quit notice = write "QUIT" (':' : unwords notice)
-              >> io exitSuccess
+quit notice 
+    | null notice = do
+      write $ IrcC.quit Nothing
+      io exitSuccess
+    | otherwise   = do
+      write $ IrcC.quit $ Just $ unwords notice
+      io exitSuccess
 
 -- Echo text
 echo :: [String] -> Net ()
-echo text = privmsg $ unwords text
+echo text = do
+  privmsg $ unwords text
 
 -- Join a channel
 joinChan :: [String] -> Net ()
-joinChan chan = write "JOIN" (':' : unwords chan)
+joinChan chan | null chan = return ()
+              | otherwise = write $ IrcC.joinChan $ head chan
 
 -- Output uptime
 uptime :: [String] -> Net ()
