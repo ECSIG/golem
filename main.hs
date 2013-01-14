@@ -11,24 +11,25 @@ import System.Environment (getArgs)
 import Control.Monad.Reader
 import Control.Exception
 import System.Time
+import Control.Applicative((<$>))
 import Prelude hiding (catch)
 import Control.Concurrent (threadDelay)
 import qualified Network.IRC.Commands as IrcC
-import Network.IRC.Base(ServerName,UserName,Message,encode)
-
+import qualified Network.IRC.Base as IrcB
+import qualified Network.IRC.Parser as IrcP
  
-defaultName   = "golem-bot"
-defaultChannel  = "#golem"
-defaultServer = "irc.ecsig.com"
-port   = 6667
+name = "golem"
+chan = "#golem"
+serv = "irc.ecsig.com"
+port = 6667
 
 type Net = ReaderT Bot IO
 
 data Bot = Bot { startTime :: ClockTime
                , socket :: Handle
-               , nickname :: UserName
+               , nickname :: IrcB.UserName
                , channel :: IrcC.Channel
-               , server :: ServerName
+               , server :: IrcB.ServerName
                }
 
 -- Set up actions to run on start and end, and run the main loop
@@ -38,23 +39,27 @@ main = bracket connect disconnect loop
     disconnect = hClose . socket
     loop       = runReaderT run
 
--- Connect to the server and return the initial bot state
+-- builds a bot from defaults & provided args
 connect :: IO Bot
 connect = notify $ do
-      args <- getArgs
-      buildState defaultName defaultChannel defaultServer args
-    where buildState n c s [] = do 
-                     t <- getClockTime
-                     h <- connectTo s (PortNumber (fromIntegral port))
-                     hSetBuffering h NoBuffering
-                     return (Bot t h n c s)
-          buildState n c s (a:as)
-                   | "nick=" `isPrefixOf` a
-                       = buildState (drop 5 a) c s as
-                   | "channel=" `isPrefixOf` a
-                       = buildState n (drop 8 a) s as
-                   | "server=" `isPrefixOf` a
-                       = buildState n c (drop 7 a) as
+  args <- getArgs
+  makeBot name chan serv args
+    where makeBot n c s (a:as)
+              | "nick=" `isPrefixOf` a
+                  = makeBot (drop 5 a) c s as
+              | "channel=" `isPrefixOf` a
+                  = makeBot n (drop 8 a) s as
+              | "server=" `isPrefixOf` a
+                  = makeBot n c (drop 7 a) as
+          makeBot n c s [] = do
+            t <- getClockTime
+            h <- connectTo s (PortNumber (fromIntegral port))
+            hSetBuffering h NoBuffering
+            return Bot { startTime=t 
+                       , socket=h 
+                       , nickname=n 
+                       , channel=c 
+                       , server=s }
           notify = bracket_
                    (print "Connecting to server ... " >> hFlush stdout)
                    (putStrLn "done.")
@@ -65,7 +70,7 @@ run :: Net ()
 run = do
   name <- asks nickname
   write $ IrcC.nick name
-  write $ IrcC.user ((take 6 name)++"-bot") "0" "*" "some kinda robot"
+  write $ IrcC.user (take 6 name ++ "-bot") "0" "*" "some kinda robot"
   asks socket >>= listen
 
 ----------------------------
@@ -75,93 +80,102 @@ run = do
 io :: IO a -> Net a
 io = liftIO
 
-write :: Message -> Net ()
+-- prints message to stdout & network
+write :: IrcB.Message -> Net ()
 write msg = do
   h <- asks socket
   io $ hPutStrLn h str
   io $ putStrLn str
-    where str = encode msg
+    where str = IrcB.encode msg
 
-privmsg :: String -> Net ()
-privmsg s = do 
-  c <- asks channel
-  write $ IrcC.privmsg c s
-
+-- waits for message, decodes & passes to parser, waits again
 listen :: Handle -> Net ()
 listen h = forever $ do
-       s <- init `fmap` io (hGetLine h)
-       io (putStrLn s)
-       if ping s
-       then pong s
-       else if welcome s
-            then do 
-              c <- asks channel
-              joinChan [c]
-            else parse (clean s)
-    where
-       clean     = drop 1 . dropWhile (/= ':') . drop 1
-       ping x    = "PING :" `isPrefixOf` x
-       pong x    = do io $ hPrintf h "%s %s\r\n" "PONG" (':' : drop 6 x)
-       welcome x = words x !! 1 == "001"
+       msg <- IrcP.decode <$> io (hGetLine h)
+       case msg of 
+         Nothing -> return ()
+         Just m -> io (putStrLn $ IrcB.encode m) >> parse m
 
-parse :: String -> Net ()
-parse text = do
-  name <- asks nickname
-  if null text then return ()
-  else if name `isPrefixOf` text 
-       then eval $ drop 1 $ words text
-  else if '!' == head text 
-       then eval $ words $ drop 1 text
-  else return ()
+-- determines what to do with message based on command field
+parse :: IrcB.Message -> Net ()
+parse (IrcB.Message pre cmd params) =
+    case cmd of
+      "PING" -> write $ IrcB.Message pre "PONG" params
+      "001" -> asks channel >>= joinChan
+      "PRIVMSG" -> readMsg pre params
+      _ -> return ()
 
-eval ::  [String] -> Net ()
-eval text | null text = return ()
-          | otherwise = 
-              let cmd  = head text
-                  args = tail text
-                  act  = lookup cmd actions
-              in case act of 
-                   Nothing -> return ()
-                   Just action -> action args
+-- checks if incoming private messages start with ! or botname
+readMsg :: Maybe IrcB.Prefix -> [IrcB.Parameter] -> Net ()
+readMsg (Just nick) [chan,text] =
+        let (first:rest) = words text in
+        do botName <- asks nickname
+           case first of
+             ('!':cmd) -> eval nick (cmd:rest) chan
+             botName -> eval nick rest chan
 
+-- evaluates messages that appear to be intended for bot
+eval :: IrcB.Prefix -> [IrcB.Parameter] -> IrcC.Channel -> Net ()
+eval nick (cmd:args) chan =
+    case lookup cmd actions of
+      Nothing -> return ()
+      Just action -> action nick args chan
+eval _ _ _ = return ()
 
 ---------------------------
 --------- Actions ---------
 ---------------------------
 
 -- Actions table
-actions :: [(String, [String] -> Net ())]
+actions :: [(String, IrcB.Prefix -> [IrcB.Parameter] -> IrcC.Channel -> Net ())]
 actions = [ ("quit", quit)
           , ("uptime", uptime)
           , ("echo", echo)
+          , ("swap", swap)
+          , ("join", \_ c _ -> joinChan $ unwords c)
+          , ("part", \_ c _ -> partChan $ unwords c)
           ]
 
+-- changes nickname
+swap :: IrcB.Prefix -> [IrcB.UserName] -> IrcC.Channel -> Net ()
+swap _ [name] _  = do
+  write $ IrcC.nick name
+  Bot t h _ c s <- ask
+  local (return $ Bot t h name c s) $ listen h
+
 -- Exit network
-quit :: [String] -> Net ()
-quit notice 
-    | null notice = do
-      write $ IrcC.quit Nothing
-      io exitSuccess
-    | otherwise   = do
-      write $ IrcC.quit $ Just $ unwords notice
-      io exitSuccess
+quit :: IrcB.Prefix ->[IrcB.Parameter] -> IrcC.Channel ->  Net ()
+quit _ _ notice = do
+  write $ IrcC.quit $ (\n -> if null n then Nothing else Just n) notice
+  io exitSuccess
 
 -- Echo text
-echo :: [String] -> Net ()
-echo text = do
-  privmsg $ unwords text
+echo :: IrcB.Prefix -> [IrcB.Parameter] -> IrcC.Channel -> Net ()
+echo n = privmsg n . unwords
+
+-- sends private message
+privmsg :: IrcB.Prefix -> String -> IrcC.Channel -> Net ()
+privmsg (IrcB.NickName n _ _) s c = do 
+  botName <- asks nickname
+  let c' = if c==botName then n else c
+  write $ IrcC.privmsg c' s
 
 -- Join a channel
-joinChan :: [String] -> Net ()
+joinChan :: IrcB.Parameter -> Net ()
 joinChan chan | null chan = return ()
-              | otherwise = write $ IrcC.joinChan $ head chan
+              | otherwise = write $ IrcC.joinChan chan
+
+-- parts from channel
+partChan :: IrcB.Parameter -> Net ()
+partChan chan | null chan = return ()
+              | otherwise = write $ IrcC.part chan
 
 -- Output uptime
-uptime :: [String] -> Net ()
-uptime _ = do
+uptime :: IrcB.Prefix -> [IrcB.Parameter] -> IrcC.Channel -> Net ()
+uptime n _ c = do
          now <- io getClockTime
          zero <- asks startTime
-         privmsg $ pretty $ diffClockTimes now zero
+         privmsg n c $ pretty $ diffClockTimes now zero
 
 
 -- Pretty print the date in '56d 7h 8m 47s' format
