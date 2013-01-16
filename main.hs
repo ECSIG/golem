@@ -37,10 +37,15 @@ data Action = Join Channel
             | Pong String
             | Idle
 
-data Request = UserReq String Channel String
-             | Ping String
+data Request = None
              | Welcome
-             | None
+             | Ping String
+             | UserReq
+               { reqUser :: String
+               , reqChan :: String
+               , reqKey  :: String
+               , reqArgs :: [String]
+               }
 
 io :: IO a -> IrcState a
 io = liftIO
@@ -89,25 +94,24 @@ readMsg (Message prefix command params) =
 readPriv :: Maybe Prefix -> Channel -> String -> IrcState Request
 readPriv (Just (NickName name _ _)) chan stmt = do
   botName <- asks userName
+  let first:rest = words stmt
   return
-    (if botName `isPrefixOf` stmt then
-      UserReq name chan $ drop (1+length botName) stmt
-    else if "!" `isPrefixOf` stmt then
-      UserReq name chan $ drop 1 stmt
-    else None)
+    (if      first==botName 
+     then    UserReq name chan (head rest) (tail rest)
+     else if head first=='!'
+     then    UserReq name chan (tail first) rest
+     else    None)
 
 -- determines appropriate action for given request
 consider :: Request -> IrcState Action
 consider None = return Idle
 consider (Ping p) = return $ Pong p
 consider Welcome = return $ Join defaultChan
-consider (UserReq name chan txt) = 
-    let actionWord = takeWhile (not . isSpace) txt
-        actionArgs = drop (1+length actionWord) txt in do
+consider req@(UserReq name chan key args) = do
    actionList <- asks actions
-   case lookup actionWord actionList of
+   case lookup key actionList of
      Nothing -> return Idle
-     Just action -> action $ UserReq name chan actionArgs
+     Just action -> action req
 
 -- carries out some action
 respond :: Action -> IrcState ()
@@ -137,24 +141,24 @@ write msg = do
 
 -- change nickname
 nickAct :: Request -> IrcState Action
-nickAct (UserReq _ _ name) | null name = return Idle
-                           | otherwise = return $ Nick name
+nickAct (UserReq _ _ _ name) | null name = return Idle
+                             | otherwise = return $ Nick $ head name
 
 -- Exit network
 quitAct :: Request -> IrcState Action
-quitAct (UserReq _ _ notice) = return $ Quit notice
+quitAct (UserReq _ _ _ notice) = return $ Quit $ unwords notice
 
 -- Echo text
 echoAct :: Request -> IrcState Action
-echoAct (UserReq _ c s) = return $ Echo c s
+echoAct (UserReq _ chan _ text) = return $ Echo chan $ unwords text
 
 
 -- Join a channel
 joinAct :: Request -> IrcState Action
-joinAct (UserReq _ _ chan) | null chan = return Idle
-                           | otherwise = return $ Join chan
+joinAct (UserReq _ _ _ chan) | null chan = return Idle
+                             | otherwise = return $ Join $ head chan
 
 -- parts from channel
 partAct :: Request -> IrcState Action
-partAct (UserReq _ _ chan) | null chan = return Idle
-                           | otherwise = return $ Part chan
+partAct (UserReq _ _ _ chan) | null chan = return Idle
+                             | otherwise = return $ Part $ head chan
